@@ -1,0 +1,348 @@
+<!DOCTYPE html>
+<html lang="ru">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width, initial-scale=1.0">
+<title>Мои приложения</title>
+<style>
+  :root {
+    --bg-color: #1e1e2f;
+    --card-bg: rgba(255, 255, 255, 0.08);
+    --card-border: rgba(255, 255, 255, 0.15);
+    --text-color: #ffffff;
+    --muted-color: #b2bec3;
+    --btn-update-bg: #3498db;
+    --btn-theme-bg: #f39c12;
+  }
+
+  [data-theme="light"] {
+    --bg-color: #f0f2f5;
+    --card-bg: #ffffff;
+    --card-border: #dfe1e5;
+    --text-color: #333333;
+    --muted-color: #6c757d;
+  }
+
+  * { box-sizing: border-box; margin: 0; padding: 0; }
+
+  body {
+    font-family: 'Segoe UI', Roboto, Helvetica, Arial, sans-serif;
+    background-color: var(--bg-color);
+    color: var(--text-color);
+    min-height: 100vh;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    padding: 40px 15px;
+    transition: background-color 0.3s, color 0.3s;
+  }
+
+  .toolbar {
+    display: flex;
+    gap: 12px;
+    margin-bottom: 30px;
+    flex-wrap: wrap;
+    justify-content: center;
+  }
+
+  .btn {
+    border: none;
+    border-radius: 10px;
+    padding: 12px 20px;
+    font-size: 16px;
+    cursor: pointer;
+    transition: transform 0.15s, box-shadow 0.15s;
+    color: white;
+    font-weight: 500;
+  }
+
+  .btn:hover { transform: translateY(-2px); box-shadow: 0 6px 15px rgba(0,0,0,0.2); }
+  .btn:active { transform: translateY(0); }
+  .btn:disabled { opacity: 0.6; cursor: wait; }
+
+  .btn-update { background-color: var(--btn-update-bg); }
+  .btn-theme { background-color: var(--btn-theme-bg); }
+
+  .apps {
+    display: grid;
+    grid-template-columns: repeat(auto-fill, minmax(220px, 1fr));
+    gap: 20px;
+    width: 100%;
+    max-width: 1000px;
+  }
+
+  .app-card {
+    background-color: var(--card-bg);
+    border: 1px solid var(--card-border);
+    border-radius: 14px;
+    padding: 25px 15px;
+    text-align: center;
+    cursor: grab;
+    transition: transform 0.2s ease, background-color 0.2s, box-shadow 0.2s;
+    display: flex;
+    flex-direction: column;
+    align-items: center;
+    gap: 10px;
+    position: relative;
+    user-select: none;
+  }
+
+  .app-card:hover { transform: translateY(-5px); }
+  .app-card:active { cursor: grabbing; }
+  .app-card.dragging {
+    opacity: 0.5;
+    box-shadow: 0 10px 20px rgba(0,0,0,0.3);
+    transform: scale(1.05);
+  }
+  .app-card .icon { font-size: 40px; line-height: 1; }
+  .app-card .name { font-size: 17px; font-weight: 600; word-break: break-word; }
+  .app-card .badge {
+    position: absolute; top: 8px; right: 10px;
+    background: #e67e22; color: #fff;
+    font-size: 11px; padding: 2px 8px; border-radius: 8px;
+  }
+
+  #status {
+    margin-top: 30px;
+    font-size: 14px;
+    color: var(--muted-color);
+    min-height: 24px;
+    text-align: center;
+    max-width: 900px;
+  }
+</style>
+</head>
+<body>
+
+  <div class="toolbar">
+    <button class="btn btn-update" id="btnCheck" onclick="checkUpdates()">🔄 Проверить обновления</button>
+    <button class="btn btn-theme" onclick="toggleTheme()" id="btnTheme">🌙 Тёмная тема</button>
+  </div>
+
+  <div class="apps" id="apps"></div>
+  <div id="status"></div>
+
+<script>
+  const GITHUB_USER     = 'ii4012899-a11y';
+  const CACHE_KEY       = 'githubAppsCache';
+  const ORDER_KEY       = 'appsOrder_v3';
+  const THEME_KEY       = 'userThemePref';
+  const CHECK_KEY       = 'lastUpdateCheck';
+  const CACHE_TTL       = 10 * 60 * 1000; // 10 минут
+
+  // Запасной список, если GitHub API недоступен
+  const FALLBACK_APPS = [
+    { id: 'Razvorot', name: 'Разворачиватель адресов', url: 'https://ii4012899-a11y.github.io/Razvorot/', icon: '🗺️', pushed: '' }
+  ];
+
+  // ---------- Тема ----------
+  function applyTheme(theme) {
+    document.documentElement.setAttribute('data-theme', theme);
+    const btn = document.getElementById('btnTheme');
+    btn.textContent = theme === 'light' ? '🌙 Тёмная тема' : '☀️ Светлая тема';
+  }
+
+  function toggleTheme() {
+    const current = document.documentElement.getAttribute('data-theme');
+    const next = current === 'light' ? 'dark' : 'light';
+    applyTheme(next);
+    localStorage.setItem(THEME_KEY, next);
+  }
+
+  const savedTheme = localStorage.getItem(THEME_KEY) ||
+    (window.matchMedia && window.matchMedia('(prefers-color-scheme: light)').matches ? 'light' : 'dark');
+  applyTheme(savedTheme);
+
+  // ---------- Загрузка приложений с GitHub ----------
+  function parseDescription(desc) {
+    if (!desc || !desc.trim()) return null;
+    const emojiRe = /(\p{Extended_Pictographic}(\uFE0F)?(\u200D\p{Extended_Pictographic}(\uFE0F)?)*)/u;
+    const m = desc.match(emojiRe);
+    let icon = '🌐';
+    let name = desc.trim();
+    if (m) {
+      icon = m[0];
+      name = desc.replace(m[0], '').trim() || m[0];
+    }
+    return { icon, name };
+  }
+
+  async function fetchRepos(force = false) {
+    const cachedRaw = localStorage.getItem(CACHE_KEY);
+    let cached = null;
+    if (cachedRaw) {
+      try { cached = JSON.parse(cachedRaw); } catch (e) { cached = null; }
+    }
+
+    if (!force && cached && Date.now() - cached.ts < CACHE_TTL) {
+      return { apps: cached.apps, offline: false };
+    }
+
+    try {
+      const r = await fetch('https://api.github.com/users/' + GITHUB_USER + '/repos?per_page=100&sort=updated');
+      if (!r.ok) throw new Error('HTTP ' + r.status);
+      const repos = await r.json();
+      const apps = repos
+        .filter(repo => repo.has_pages)
+        .map(repo => {
+          const parsed = parseDescription(repo.description);
+          return {
+            id: repo.name,
+            name: parsed ? parsed.name : repo.name,
+            icon: parsed ? parsed.icon : '🌐',
+            url: 'https://' + GITHUB_USER + '.github.io/' + repo.name + '/',
+            pushed: repo.pushed_at || ''
+          };
+        });
+      localStorage.setItem(CACHE_KEY, JSON.stringify({ ts: Date.now(), apps }));
+      return { apps, offline: false };
+    } catch (e) {
+      if (cached) return { apps: cached.apps, offline: true };
+      return { apps: FALLBACK_APPS, offline: true };
+    }
+  }
+
+  // ---------- Порядок карточек ----------
+  function mergeOrder(fetched) {
+    let order = [];
+    try { order = JSON.parse(localStorage.getItem(ORDER_KEY) || '[]'); } catch (e) {}
+    if (!Array.isArray(order)) order = [];
+    const byId = Object.fromEntries(fetched.map(a => [a.id, a]));
+    const ordered = order.filter(id => byId[id]).map(id => byId[id]);
+    const rest = fetched.filter(a => !order.includes(a.id));
+    return [...ordered, ...rest];
+  }
+
+  function saveOrder() {
+    const ids = Array.from(document.querySelectorAll('.app-card')).map(c => c.dataset.id);
+    localStorage.setItem(ORDER_KEY, JSON.stringify(ids));
+  }
+
+  // ---------- Отрисовка ----------
+  let currentApps = [];
+
+  function renderApps() {
+    const container = document.getElementById('apps');
+    container.innerHTML = '';
+    currentApps.forEach(app => {
+      const card = document.createElement('div');
+      card.className = 'app-card';
+      card.draggable = true;
+      card.dataset.id = app.id;
+      if (app.updated) {
+        const badge = document.createElement('div');
+        badge.className = 'badge';
+        badge.textContent = 'обновлено';
+        card.appendChild(badge);
+      }
+      const icon = document.createElement('div');
+      icon.className = 'icon';
+      icon.textContent = app.icon;
+      const name = document.createElement('div');
+      name.className = 'name';
+      name.textContent = app.name;
+      card.appendChild(icon);
+      card.appendChild(name);
+
+      card.addEventListener('click', () => window.open(app.url, '_blank'));
+      addDragEvents(card);
+      container.appendChild(card);
+    });
+  }
+
+  // ---------- Drag-and-Drop ----------
+  function addDragEvents(card) {
+    card.addEventListener('dragstart', () => card.classList.add('dragging'));
+    card.addEventListener('dragend', () => {
+      card.classList.remove('dragging');
+      syncOrderFromDOM();
+      saveOrder();
+    });
+
+    card.addEventListener('dragover', e => {
+      e.preventDefault();
+      const dragging = document.querySelector('.dragging');
+      if (!dragging || dragging === card) return;
+      const rect = card.getBoundingClientRect();
+      const after = (e.clientY - rect.top) > rect.height / 2;
+      const parent = card.parentNode;
+      parent.insertBefore(dragging, after ? card.nextSibling : card);
+    });
+  }
+
+  function syncOrderFromDOM() {
+    const ids = Array.from(document.querySelectorAll('.app-card')).map(c => c.dataset.id);
+    const byId = Object.fromEntries(currentApps.map(a => [a.id, a]));
+    currentApps = ids.map(id => byId[id]).filter(Boolean);
+  }
+
+  // ---------- Статус ----------
+  function setStatus(text) {
+    document.getElementById('status').textContent = text;
+  }
+
+  // ---------- Проверка обновлений ----------
+  async function checkUpdates() {
+    const btn = document.getElementById('btnCheck');
+    btn.disabled = true;
+    setStatus('Проверяю обновления…');
+
+    const { apps, offline } = await fetchRepos(true);
+
+    if (offline) {
+      setStatus('⚠️ Не удалось связаться с GitHub. Показана сохранённая копия списка.');
+      currentApps = mergeOrder(apps);
+      renderApps();
+      btn.disabled = false;
+      return;
+    }
+
+    const lastCheck = localStorage.getItem(CHECK_KEY);
+    let updatedIds = [];
+    if (lastCheck) {
+      const lastTs = new Date(lastCheck).getTime();
+      updatedIds = apps.filter(a => a.pushed && new Date(a.pushed).getTime() > lastTs).map(a => a.id);
+    }
+
+    // Подсвечиваем обновившиеся карточки
+    currentApps = mergeOrder(apps);
+    currentApps.forEach(a => { a.updated = updatedIds.includes(a.id); });
+    renderApps();
+
+    const nowStr = new Date().toLocaleString('ru-RU');
+    localStorage.setItem(CHECK_KEY, new Date().toISOString());
+
+    if (lastCheck && updatedIds.length > 0) {
+      const names = updatedIds.map(id => (currentApps.find(a => a.id === id) || {}).name || id);
+      setStatus('🆕 Есть обновления: ' + names.join(', ') + '. Проверено: ' + nowStr);
+    } else {
+      setStatus('✅ Все приложения актуальны. Проверено: ' + nowStr);
+    }
+    btn.disabled = false;
+  }
+
+  // ---------- Запуск ----------
+  async function init() {
+    setStatus('Загружаю список приложений…');
+    const { apps, offline } = await fetchRepos();
+    currentApps = mergeOrder(apps);
+    renderApps();
+
+    if (offline) {
+      setStatus('⚠️ GitHub API недоступен — показана сохранённая копия.');
+    } else {
+      setStatus('');
+    }
+
+    const lastCheck = localStorage.getItem(CHECK_KEY);
+    if (lastCheck) {
+      setStatus((offline ? '⚠️ GitHub API недоступен. ' : '') +
+        'Последняя проверка обновлений: ' + new Date(lastCheck).toLocaleString('ru-RU'));
+    }
+  }
+
+  init();
+</script>
+
+</body>
+</html>
